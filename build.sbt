@@ -1,14 +1,14 @@
 import Dependencies._
 
-ThisBuild / scalaVersion     := "2.12.8"
+ThisBuild / scalaVersion     := "2.13.1"
 ThisBuild / version          := "0.1.0-SNAPSHOT"
 ThisBuild / organization     := "me.nsmr"
 ThisBuild / organizationName := "nsmr"
 
 lazy val root = (project in file("."))
   .settings(
-    name := "scala-bibtex",
-    libraryDependencies += scalaTest % Test
+    name := "scala-bibtex"//,
+    // libraryDependencies += scalaTest % Test
   )
 
 // Uncomment the following for publishing to Sonatype.

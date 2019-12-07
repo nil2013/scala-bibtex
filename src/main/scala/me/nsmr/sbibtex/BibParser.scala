@@ -146,7 +146,7 @@ object BibParser {
         sb.append("\"").append(body.map(printIndented).mkString).append("\"")
       case Brace(body) =>
         sb.append("{").append(nl)
-        sb.append(body.map(printIndented).mkString(nl).lines.map(l => s"  $l").mkString(nl)).append(nl)
+        sb.append(body.map(printIndented).mkString(nl).linesIterator.map(l => s"  $l").mkString(nl)).append(nl)
         sb.append("}")
       case KeyValuePair(left, right) =>
         sb.append(printIndented(left)).append("=").append(printIndented(right))
