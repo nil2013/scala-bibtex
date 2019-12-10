@@ -4,11 +4,11 @@ import scala.annotation.tailrec
 import scala.util.{Failure, Success, Try}
 import java.io.InputStreamReader
 
-class BibParser(tokenizer: BibTokenizer) {
+class Parser(tokenizer: Tokenizer) {
 
-  import BibParser.{Reading, blockOperators}
+  import Parser.{Reading, blockOperators}
 
-  lazy val (next, remainder): (ParseResult[BibEntry], BibParser) = {
+  lazy val (next, remainder): (ParseResult[BibEntry], Parser) = {
     if (isEmpty) throw new IndexOutOfBoundsException("No more parsable tokens remained...")
     else {
       lazy val valuePattern = "[{\"](.*)[}\"]".r
@@ -57,7 +57,7 @@ class BibParser(tokenizer: BibTokenizer) {
         BibEntry(new BibEntry.EntryType(name), Map.empty, Set.empty)
       }.skipUntil(_ == "{"), Nil)
 
-      (ParseResult.Success(reading.result, reading.tokenizer.stack.reverse.mkString), new BibParser(reading.tokenizer.discharge()))
+      (ParseResult.Success(reading.result, reading.tokenizer.stack.reverse.mkString), new Parser(reading.tokenizer.discharge()))
     }
   }
 
@@ -65,17 +65,17 @@ class BibParser(tokenizer: BibTokenizer) {
   def isEmpty: Boolean = tokenizer.isEmpty
 }
 
-object BibParser {
+object Parser {
 
   private lazy val blockOperators = List(("{", "}"), ("\"", "\""))
 
-  def fromString(str: String): BibParser = new BibParser(BibTokenizer.fromString(str))
+  def fromString(str: String): Parser = new Parser(Tokenizer.fromString(str))
 
   @deprecated
-  def fromInputStreamReader(isr: InputStreamReader): BibParser = new BibParser(BibTokenizer.fromInputStreamReader(isr))
+  def fromInputStreamReader(isr: InputStreamReader): Parser = new Parser(Tokenizer.fromInputStreamReader(isr))
 
   def readAll(str: String): List[ParseResult[BibEntry]] = {
-    @tailrec def loop(parser: BibParser, stack: List[ParseResult[BibEntry]]): List[ParseResult[BibEntry]] =
+    @tailrec def loop(parser: Parser, stack: List[ParseResult[BibEntry]]): List[ParseResult[BibEntry]] =
       if (parser.isEmpty) stack.reverse
       else {
         Try {
@@ -89,7 +89,7 @@ object BibParser {
         }
       }
 
-    loop(BibParser.fromString(str), Nil)
+    loop(Parser.fromString(str), Nil)
   }
 
   private object Reading {
@@ -111,7 +111,7 @@ object BibParser {
       def skipSpace(): EntryPoint = new EntryPoint(this.reading.skipSpace())
     }
 
-    def apply(tokenizer: BibTokenizer): EntryPoint = new EntryPoint(new Reading(tokenizer, ()))
+    def apply(tokenizer: Tokenizer): EntryPoint = new EntryPoint(new Reading(tokenizer, ()))
 
     object Result {
       def unapply[T](reading: Reading[T]): Option[T] = Option(reading.result)
@@ -119,7 +119,7 @@ object BibParser {
 
   }
 
-  private class Reading[T](val tokenizer: BibTokenizer, val result: T) {
+  private class Reading[T](val tokenizer: Tokenizer, val result: T) {
 
     type Next = (T, List[String])
 
