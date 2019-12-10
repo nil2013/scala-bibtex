@@ -11,6 +11,7 @@ class BibParser(tokenizer: BibTokenizer) {
   lazy val (next, remainder): (ParseResult[BibEntry], BibParser) = {
     if (isEmpty) throw new IndexOutOfBoundsException("No more parsable tokens remained...")
     else {
+      lazy val valuePattern = "[{\"](.*)[}\"]".r
       @tailrec def blockParser(reading: Reading[BibEntry], terminators: List[String], stack: List[String]): (Reading[BibEntry], String) = {
         terminators match {
           case Nil => (reading, stack.reverse.mkString)
@@ -42,7 +43,7 @@ class BibParser(tokenizer: BibTokenizer) {
           case reading@Reading.Result((_, tok)) =>
             blockOperators.find(_._1 == tok) match {
               case Some((_, terminator)) => blockParser(reading.map(_._1), terminator :: Nil, tok :: Nil) match {
-                case (reading, token) => bodyParser(reading, token :: stack)
+                case (reading, valuePattern(token)) => bodyParser(reading, token :: stack)
               }
               case None => bodyParser(reading.map {
                 _._1
@@ -52,11 +53,11 @@ class BibParser(tokenizer: BibTokenizer) {
       }
 
 
-      val reading = bodyParser(Reading(tokenizer).skipUntil(_ == "@").skipSpace().read().map { tokens =>
-        BibEntry(new BibEntry.EntryType(tokens.mkString), Map.empty, Set.empty)
+      val reading = bodyParser(Reading(tokenizer).skipUntil(_ == "@").skipSpace().read().map { name =>
+        BibEntry(new BibEntry.EntryType(name), Map.empty, Set.empty)
       }.skipUntil(_ == "{"), Nil)
 
-      (ParseResult.Success(reading.result, reading.tokens.mkString), new BibParser(reading.tokenizer))
+      (ParseResult.Success(reading.result, reading.tokenizer.stack.reverse.mkString), new BibParser(reading.tokenizer.discharge()))
     }
   }
 
@@ -101,7 +102,7 @@ object BibParser {
 
       def readUntil(f: String => Boolean): Reading[List[String]] = this.reading.readUntil(f).map(_._2)
 
-      def readIf(f: String => Boolean): Reading[List[String]] = this.reading.readIf(f).map(_._2)
+      def readIf(f: String => Boolean): Reading[Option[String]] = this.reading.readIf(f).map(_._2)
 
       def skipWhile(f: String => Boolean): EntryPoint = new EntryPoint(this.reading.skipWhile(f))
 
@@ -110,7 +111,7 @@ object BibParser {
       def skipSpace(): EntryPoint = new EntryPoint(this.reading.skipSpace())
     }
 
-    def apply(tokenizer: BibTokenizer): EntryPoint = new EntryPoint(new Reading(tokenizer, Nil, Unit))
+    def apply(tokenizer: BibTokenizer): EntryPoint = new EntryPoint(new Reading(tokenizer, ()))
 
     object Result {
       def unapply[T](reading: Reading[T]): Option[T] = Option(reading.result)
@@ -118,49 +119,53 @@ object BibParser {
 
   }
 
-  private class Reading[T](val tokenizer: BibTokenizer, protected val stack: List[String], val result: T) {
+  private class Reading[T](val tokenizer: BibTokenizer, val result: T) {
 
     type Next = (T, List[String])
 
-    def tokens: List[String] = tokenizer.stack.reverse
+    def map[U](interpreter: T => U): Reading[U] = new Reading(tokenizer, interpreter(result))
 
-    def map[U](interpreter: T => U): Reading[U] = new Reading(tokenizer, stack, interpreter(result))
+    def read(): Reading[(T, String)] = {
+      val next = tokenizer.read()
+      new Reading(next, (result, next.stack.head))
+    }
 
-    def read(): Reading[(T, String)] =
-      tokenizer.read().map {
-        case (token :: _, tokenizer) => new Reading(tokenizer.discharge(), token :: stack, (result, token))
-        case (Nil, _) => throw new IllegalArgumentException("No more element...")
+    def readWhile(f: String => Boolean): Reading[Next] = {
+      @tailrec def loop(reading: Reading[T], stack: List[String]): Reading[Next] = {
+        val next = reading.read()
+        next.result match {
+          case (_, token) if f(token) => loop(next.map(_._1), token :: stack)
+          case _ => reading.map(result => (result, stack.reverse))
+        }
       }
+      loop(this, Nil)
+    }
 
-    def readWhile(f: String => Boolean): Reading[Next] =
-      tokenizer.readWhile(f).map { (stack, tokenizer) =>
-        new Reading(tokenizer.discharge(), stack ::: this.stack, (result, stack.reverse))
+    def readUntil(f: String => Boolean): Reading[Next] ={
+      @tailrec def loop(reading: Reading[T], stack: List[String]): Reading[Next] = {
+        val next = reading.read()
+        next.result match {
+          case (result, token) if f(token) => next.map { _ => (result, (token :: stack).reverse) }
+          case (_, token) => loop(next.map(_._1), token :: stack)
+        }
       }
+      loop(this, Nil)
+    }
 
-    def readUntil(f: String => Boolean): Reading[Next] =
-      tokenizer.readUntil(f).map { (stack, tokenizer) =>
-        new Reading(tokenizer.discharge(), stack ::: this.stack, (result, stack.reverse))
-      }
-
-    def readIf(f: String => Boolean): Reading[Next] = {
-      tokenizer.read().map {
-        case (token :: Nil, tokenizer) if f(token) => new Reading(tokenizer.discharge(), token :: this.stack, (result, token :: Nil))
-        case (token :: Nil, _) => throw new IllegalArgumentException(s"Unexpected Token found...: ${token}")
-        case result => throw new IllegalArgumentException(s"Unexpected result returned: ${(result)}")
-      }
+    def readIf(f: String => Boolean): Reading[(T, Option[String])] = {
+      val next = this.read()
+      if(f(next.result._2)) next.map { case (obj, token) => (obj, Option(token)) }
+      else this.map { obj => (obj, None) }
     }
 
     def skipWhile(f: String => Boolean): Reading[T] =
-      tokenizer.readWhile(f).map {
-        (stack, tokenizer) => new Reading(tokenizer.discharge(), stack ::: this.stack, result)
-      }
+      new Reading(this.tokenizer.skipWhile(f), this.result)
 
     def skipUntil(f: String => Boolean): Reading[T] =
-      tokenizer.readUntil(f).map {
-        (stack, tokenizer) => new Reading(tokenizer.discharge(), stack ::: this.stack, result)
-      }
+      new Reading(this.tokenizer.skipUntil(f), this.result)
 
-    def skipSpace(): Reading[T] = this.skipWhile(_.forall(_.isWhitespace))
+    def skipSpace(): Reading[T] =
+      new Reading(this.tokenizer.skipSpace(), this.result)
   }
 
 }

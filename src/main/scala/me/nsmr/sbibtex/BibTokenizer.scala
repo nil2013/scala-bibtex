@@ -31,12 +31,15 @@ class BibTokenizer(val stack: List[String], reader: BibReader) {
 
   private def remainder: BibReader = nextTuple._2
 
+  def exhaustedTokens(): List[String] = this.stack.reverse
+
   def read(): BibTokenizer = new BibTokenizer(this.next :: this.stack, this.remainder)
 
   def discharge(): BibTokenizer = new BibTokenizer(Nil, this.reader)
 
   def map[T](f: (List[String], BibTokenizer) => T): T = f(this.stack, this)
 
+  @deprecated
   def readSome(size: Int): BibTokenizer = {
     @tailrec def loop(cnt: Int, remainder: BibTokenizer): BibTokenizer = {
       if (cnt > 0) loop(cnt - 1, remainder.read())
@@ -46,16 +49,16 @@ class BibTokenizer(val stack: List[String], reader: BibReader) {
     loop(size, this)
   }
 
-  def readWhile(f: String => Boolean): BibTokenizer = {
+  def skipWhile(f: String => Boolean): BibTokenizer = {
     @tailrec def loop(remainder: BibTokenizer): BibTokenizer = {
-      if (f(remainder.next)) loop(remainder.read)
+      if (f(remainder.next)) loop(remainder.read())
       else remainder
     }
 
     loop(this)
   }
 
-  def readUntil(f: String => Boolean): BibTokenizer = {
+  def skipUntil(f: String => Boolean): BibTokenizer = {
     @tailrec def loop(remainder: BibTokenizer): BibTokenizer = {
       if (f(remainder.next)) remainder.read()
       else loop(remainder.read())
@@ -64,13 +67,15 @@ class BibTokenizer(val stack: List[String], reader: BibReader) {
     loop(this)
   }
 
-  def apply(): (List[String], BibTokenizer) = (this.stack, this)
+  def skipSpace(): BibTokenizer = skipWhile(_.forall(_.isWhitespace))
+
+//  def apply(): (List[String], BibTokenizer) = (this.stack, this)
 
   def isEmpty: Boolean = reader.isEmpty
 
-  private def push(token: String): BibTokenizer = new BibTokenizer(token :: this.stack, this.reader)
+//  private def push(token: String): BibTokenizer = new BibTokenizer(token :: this.stack, this.reader)
 
-  private def push(stack: List[String]): BibTokenizer = new BibTokenizer(stack ::: this.stack, this.reader)
+//  private def push(stack: List[String]): BibTokenizer = new BibTokenizer(stack ::: this.stack, this.reader)
 
 }
 
