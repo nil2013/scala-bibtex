@@ -5,16 +5,17 @@ object BibEntry {
   class EntryType(val name: String, val required: Set[String] = Set.empty) {
     override def toString(): String = s"@$name"
   }
+
   // EntryTypeについてはXMLで用意しておいて、それを読み込む格好にする。
 
   def sanitize(orig: String): String = orig
 }
 
-class BibEntry(
-                val entryType: BibEntry.EntryType,
-                val values: Map[String, String],
-                val tags: Set[String]
-) {
+case class BibEntry(
+                     entryType: BibEntry.EntryType,
+                     values: Map[String, String],
+                     tags: Set[String]
+                   ) {
 
   def verify(): Set[String] = entryType.required.filter(key => !values.keySet.contains(key))
 
@@ -23,9 +24,9 @@ class BibEntry(
     val nl = System.lineSeparator()
 
     sb.append(s"@${entryType.name}{")
-    if(!tags.isEmpty) sb.append(" ").append(tags.mkString(", "))
+    if (!tags.isEmpty) sb.append(" ").append(tags.mkString(", "))
     sb.append(nl).append(
-      values.map { case (k, v) => s"  $k = {${BibEntry.sanitize(v)}}"}.mkString(nl)
+      values.map { case (k, v) => s"  $k = {${BibEntry.sanitize(v)}}" }.mkString(nl)
     ).append(nl).append("}")
 
     sb.toString

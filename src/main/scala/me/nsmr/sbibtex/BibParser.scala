@@ -1,212 +1,166 @@
 package me.nsmr.sbibtex
 
-
 import scala.annotation.tailrec
+import scala.util.{Failure, Success, Try}
+import java.io.InputStreamReader
 
-object BibParser {
-  val specialTokens = Set("@", "{", "}", "=", "\"", " ", "\n", ",")
+class BibParser(tokenizer: BibTokenizer) {
 
-  def tokenize(source: String): List[String] = {
-    @tailrec def read(remain: String, chars: List[Char], tokens: List[String]): List[String] = {
-      if (remain.isEmpty) {
-        if (chars.isEmpty) tokens.reverse
-        else read(remain, Nil, (chars.reverse.mkString) :: tokens)
-      } else {
-        specialTokens.find(t => remain.startsWith(t)) match {
-          case Some(t) =>
-            chars match {
-              case Nil => read(remain.drop(t.length), Nil, t :: tokens)
-              case chars => read(remain.drop(t.length), Nil, t :: (chars.reverse.mkString) :: tokens)
+  import BibParser.{Reading, blockOperators}
+
+  lazy val (next, remainder): (ParseResult[BibEntry], BibParser) = {
+    if (isEmpty) throw new IndexOutOfBoundsException("No more parsable tokens remained...")
+    else {
+      @tailrec def blockParser(reading: Reading[BibEntry], terminators: List[String], stack: List[String]): (Reading[BibEntry], String) = {
+        terminators match {
+          case Nil => (reading, stack.reverse.mkString)
+          case terminator :: remainder =>
+            reading.read() match {
+              case reading@Reading.Result((_, tok)) =>
+                blockParser(reading.map(_._1), {
+                  if (tok == terminator) remainder
+                  else blockOperators.find(_._1 == tok) match {
+                    case Some((_, terminator)) => terminator :: terminators
+                    case None => terminators
+                  }
+                }, tok :: stack)
             }
-          case None => read(remain.tail, remain.head :: chars, tokens)
         }
       }
-    }
 
-    read(source, Nil, Nil)
-  }
-
-  case class Tree(nodes: List[Node]) {
-  }
-
-  sealed abstract class Node {
-
-    def isLeaf: Boolean = this.isInstanceOf[Leaf]
-
-    def isLeafThen[A](f: Leaf => A): Option[A] = {
-      if (this.isLeaf) Some(f(this.asInstanceOf[Leaf]))
-      else None
-    }
-
-  }
-
-  case class Leaf(body: String) extends Node {
-
-    override def isLeaf = true
-
-  }
-
-  case class KeyValuePair(left: Leaf, right: Node) extends Node
-
-  sealed abstract trait Block extends Node {
-    def begin: String
-
-    def body: List[Node]
-
-    def end: String
-  }
-
-  case class Brace(override val body: List[Node]) extends Block {
-    override def begin: String = "{"
-
-    override def end: String = "}"
-  }
-
-  case class Quoted(override val body: List[Node]) extends Block {
-    def begin: String = "\""
-
-    def end: String = "\""
-  }
-
-  /**
-   * ラフな構文木を構成します。
-   *
-   * @param tokens
-   * @return
-   */
-  def buildTree(tokens: List[String]): Tree = {
-    @tailrec def mainLoop(remain: List[String], stack: List[Node]): Tree = {
-      remain match {
-        case Nil => Tree(stack.reverse)
-        case head :: tail if head.forall(_.isWhitespace) => mainLoop(tail, stack)
-        case _ =>
-          read(remain) match {
-            case (remain, Brace(body)) =>
-              mainLoop(remain, Brace(parseBody(body)) :: stack)
-            case (remain, node) => mainLoop(remain, node :: stack)
-          }
-      }
-    }
-
-    def parseBody(nodes: List[Node]): List[Node] = {
-      @tailrec def loop(remain: List[Node], stack: List[Node]): List[Node] = {
-        remain match {
-          case Nil => stack.reverse
-          case Leaf(body) :: tail if body.forall(_.isWhitespace) => loop(tail, stack)
-          case Leaf(",") :: tail => loop(tail, stack)
-          case (head @ Leaf("=")) :: tail =>
-            if (!stack.head.isLeaf) throw new UnexpectedNodeTypeException(stack.head)
-            else loop(tail, head :: stack)
-          case head :: tail =>
+      @tailrec
+      def bodyParser(reading: Reading[BibEntry], stack: List[String]): Reading[BibEntry] = {
+        reading.skipSpace().read() match {
+          case reading@Reading.Result((_, ",")) =>
             stack match {
-              case Leaf("=") :: key :: stack => loop(tail, KeyValuePair(key.asInstanceOf[Leaf], head) :: stack)
-              case _ => loop(tail, head :: stack)
+              case v :: "=" :: k :: Nil =>
+                bodyParser(reading.map { case (e, _) => e.copy(values = e.values + (k -> v)) }, Nil)
+              case tag :: Nil => bodyParser(reading.map { case (e, _) => e.copy(tags = e.tags + tag) }, Nil)
+              case _ => throw new IllegalArgumentException(s"Cannot interpret stack like: '${stack.reverse.mkString("', '")}'")
+            }
+          case reading@Reading.Result((_, "}")) => reading.map(_._1)
+          case reading@Reading.Result((_, tok)) =>
+            blockOperators.find(_._1 == tok) match {
+              case Some((_, terminator)) => blockParser(reading.map(_._1), terminator :: Nil, tok :: Nil) match {
+                case (reading, token) => bodyParser(reading, token :: stack)
+              }
+              case None => bodyParser(reading.map {
+                _._1
+              }, tok :: stack)
             }
         }
       }
 
-      loop(nodes, Nil)
-    }
 
-    def read(remain: List[String]): (List[String], Node) = {
-      remain match {
-        case Nil => throw new BibSyntaxException("Unexpected EOL occurred")
-        case "{" :: tail =>
-          val (remain, tokens) = readBlock(tail, "}", Nil)
-          (remain, Brace(tokens.reverse))
-        case "\"" :: tail =>
-          val (remain, tokens) = readBlock(tail, "\"", Nil)
-          (remain, Quoted(tokens.reverse))
-        case head :: tail => (tail, Leaf(head))
-      }
-    }
+      val reading = bodyParser(Reading(tokenizer).skipUntil(_ == "@").skipSpace().read().map { tokens =>
+        BibEntry(new BibEntry.EntryType(tokens.mkString), Map.empty, Set.empty)
+      }.skipUntil(_ == "{"), Nil)
 
-    @tailrec def readBlock(remain: List[String], until: String, stack: List[Node]): (List[String], List[Node]) = {
-      remain match {
-        case Nil =>
-          if (until.isEmpty) (Nil, stack)
-          else throw new BibSyntaxException(s"Unmatched Bracket: '${until}' not found...")
-        case head :: tail if head == until => (tail, stack)
-        case _ => {
-          val (tail, node) = read(remain)
-          readBlock(tail, until, node :: stack)
-        }
-      }
+      (ParseResult.Success(reading.result, reading.tokens.mkString), new BibParser(reading.tokenizer))
     }
-
-    mainLoop(tokens, Nil)
   }
 
-  def printIndented(node: Node): String = {
-    val nl = System.lineSeparator()
-    val sb = new StringBuilder
-    node match {
-      case Leaf(body) => sb.append(body)
-      case Quoted(body) =>
-        sb.append("\"").append(body.map(printIndented).mkString).append("\"")
-      case Brace(body) =>
-        sb.append("{").append(nl)
-        sb.append(body.map(printIndented).mkString(nl).lines.map(l => s"  $l").mkString(nl)).append(nl)
-        sb.append("}")
-      case KeyValuePair(left, right) =>
-        sb.append(printIndented(left)).append("=").append(printIndented(right))
-    }
-    sb.toString()
-  }
-
-  def conjunction(nodes: List[Node], sep: String = ""): String = {
-    def asSource(head: Node): String = head match {
-      case Leaf(body) => body
-      case KeyValuePair(Leaf(key), right) => new StringBuilder(key).append(asSource(right)).toString
-      case Brace(nodes) => s"{${conjunction(nodes)}}"
-      case Quoted(nodes) => s""""${conjunction(nodes)}""""
-    }
-
-    nodes.iterator.map(asSource).mkString
-  }
-
-
-  class BibSyntaxException(message: String) extends Exception(message)
-
-  class UnexpectedNodeTypeException(node: Node) extends BibSyntaxException(s"Unexpected Node Type: '$node' is-a ${node.getClass.getSimpleName}")
-
-  def load(source: String): BibParser = new BibParser(BibParser.buildTree(BibParser.tokenize(source)).nodes.iterator)
+  // TODO: check whether the condition is correct or not.
+  def isEmpty: Boolean = tokenizer.isEmpty
 }
 
-class BibParser(it: Iterator[BibParser.Node]) {
+object BibParser {
 
-  import me.nsmr.sbibtex.BibParser.{Brace, KeyValuePair, Leaf, Node, Quoted, Tree, UnexpectedNodeTypeException, conjunction}
+  private lazy val blockOperators = List(("{", "}"), ("\"", "\""))
 
-  def nextEntry: BibEntry = {
-    it.dropWhile(_ != Leaf("@"))
-    val entryType: String = it.dropWhile(_ != Leaf("@")).drop(1).next() match {
-      case Leaf(label) => label
-      case node => throw new UnexpectedNodeTypeException(node)
-    }
+  def fromString(str: String): BibParser = new BibParser(BibTokenizer.fromString(str))
 
-    val (values, tags) = it.next match {
-      case Brace(body) =>
-        @tailrec def loop(remain: List[Node], values: List[KeyValuePair], tags: List[Leaf]): (Map[String, String], Set[String]) = {
-          remain match {
-            case Nil => (values.iterator.map { case KeyValuePair(left, right) =>
-              left.body -> (right match {
-                case Brace(body) => conjunction(body)
-                case Quoted(body) => conjunction(body)
-                case Leaf(body) => body
-                case node => throw new UnexpectedNodeTypeException(node)
-              })
-            }.toMap, tags.iterator.map(_.body).toSet)
-            case (head: KeyValuePair) :: tail => loop(tail, head :: values, tags)
-            case (head: Leaf) :: tail => loop(tail, values, head :: tags)
-            case head :: _ => throw new UnexpectedNodeTypeException(head)
-          }
+  @deprecated
+  def fromInputStreamReader(isr: InputStreamReader): BibParser = new BibParser(BibTokenizer.fromInputStreamReader(isr))
+
+  def readAll(str: String): List[ParseResult[BibEntry]] = {
+    @tailrec def loop(parser: BibParser, stack: List[ParseResult[BibEntry]]): List[ParseResult[BibEntry]] =
+      if (parser.isEmpty) stack.reverse
+      else {
+        Try {
+          (parser.next, parser.remainder)
+        } match {
+          case Success((next, remainder)) =>
+            loop(parser.remainder, parser.next :: stack)
+          case Failure(e) =>
+            e.printStackTrace()
+            stack.reverse
         }
+      }
 
-        loop(body, Nil, Nil)
-      case node => throw new UnexpectedNodeTypeException(node)
-    }
-    new BibEntry(new BibEntry.EntryType(entryType), values, tags)
+    loop(BibParser.fromString(str), Nil)
   }
 
-  def isFinished: Boolean = !it.hasNext
+  private object Reading {
+
+    class EntryPoint(reading: Reading[Unit]) {
+
+      def read(): Reading[String] = this.reading.read().map(_._2)
+
+      def readWhile(f: String => Boolean): Reading[List[String]] = this.reading.readWhile(f).map(_._2)
+
+      def readUntil(f: String => Boolean): Reading[List[String]] = this.reading.readUntil(f).map(_._2)
+
+      def readIf(f: String => Boolean): Reading[List[String]] = this.reading.readIf(f).map(_._2)
+
+      def skipWhile(f: String => Boolean): EntryPoint = new EntryPoint(this.reading.skipWhile(f))
+
+      def skipUntil(f: String => Boolean): EntryPoint = new EntryPoint(this.reading.skipUntil(f))
+
+      def skipSpace(): EntryPoint = new EntryPoint(this.reading.skipSpace())
+    }
+
+    def apply(tokenizer: BibTokenizer): EntryPoint = new EntryPoint(new Reading(tokenizer, Nil, Unit))
+
+    object Result {
+      def unapply[T](reading: Reading[T]): Option[T] = Option(reading.result)
+    }
+
+  }
+
+  private class Reading[T](val tokenizer: BibTokenizer, protected val stack: List[String], val result: T) {
+
+    type Next = (T, List[String])
+
+    def tokens: List[String] = tokenizer.stack.reverse
+
+    def map[U](interpreter: T => U): Reading[U] = new Reading(tokenizer, stack, interpreter(result))
+
+    def read(): Reading[(T, String)] =
+      tokenizer.read().map {
+        case (token :: _, tokenizer) => new Reading(tokenizer.discharge(), token :: stack, (result, token))
+        case (Nil, _) => throw new IllegalArgumentException("No more element...")
+      }
+
+    def readWhile(f: String => Boolean): Reading[Next] =
+      tokenizer.readWhile(f).map { (stack, tokenizer) =>
+        new Reading(tokenizer.discharge(), stack ::: this.stack, (result, stack.reverse))
+      }
+
+    def readUntil(f: String => Boolean): Reading[Next] =
+      tokenizer.readUntil(f).map { (stack, tokenizer) =>
+        new Reading(tokenizer.discharge(), stack ::: this.stack, (result, stack.reverse))
+      }
+
+    def readIf(f: String => Boolean): Reading[Next] = {
+      tokenizer.read().map {
+        case (token :: Nil, tokenizer) if f(token) => new Reading(tokenizer.discharge(), token :: this.stack, (result, token :: Nil))
+        case (token :: Nil, _) => throw new IllegalArgumentException(s"Unexpected Token found...: ${token}")
+        case result => throw new IllegalArgumentException(s"Unexpected result returned: ${(result)}")
+      }
+    }
+
+    def skipWhile(f: String => Boolean): Reading[T] =
+      tokenizer.readWhile(f).map {
+        (stack, tokenizer) => new Reading(tokenizer.discharge(), stack ::: this.stack, result)
+      }
+
+    def skipUntil(f: String => Boolean): Reading[T] =
+      tokenizer.readUntil(f).map {
+        (stack, tokenizer) => new Reading(tokenizer.discharge(), stack ::: this.stack, result)
+      }
+
+    def skipSpace(): Reading[T] = this.skipWhile(_.forall(_.isWhitespace))
+  }
+
 }

@@ -8,7 +8,9 @@ ThisBuild / organizationName := "nsmr"
 lazy val root = (project in file("."))
   .settings(
     name := "scala-bibtex",
-    libraryDependencies += scalaTest % Test
+    libraryDependencies ++= List(
+      scalaTest % Test
+    )
   )
 
 // Uncomment the following for publishing to Sonatype.
