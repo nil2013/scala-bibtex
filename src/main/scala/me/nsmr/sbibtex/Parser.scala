@@ -39,7 +39,16 @@ class Parser(tokenizer: Tokenizer) {
               case tag :: Nil => bodyParser(reading.map { case (e, _) => e.copy(tags = e.tags + tag) }, Nil)
               case _ => throw new IllegalArgumentException(s"Cannot interpret stack like: '${stack.reverse.mkString("', '")}'")
             }
-          case reading@Reading.Result((_, "}")) => reading.map(_._1)
+          case reading@Reading.Result((_, "}")) => {
+            stack match {
+              case v :: "=" :: k :: Nil =>
+                reading.map { case (e, _) => e.copy(values = e.values + (k -> v)) }
+              case tag :: Nil =>
+                reading.map { case (e, _) => e.copy(tags = e.tags + tag) }
+              case _ =>
+                reading.map(_._1)
+            }
+          }
           case reading@Reading.Result((_, tok)) =>
             blockOperators.find(_._1 == tok) match {
               case Some((_, terminator)) => blockParser(reading.map(_._1), terminator :: Nil, tok :: Nil) match {
@@ -120,6 +129,8 @@ object Parser {
   }
 
   private class Reading[T](val tokenizer: Tokenizer, val result: T) {
+
+    override def toString(): String = s"Parser.Reading(tokenizer = ${tokenizer}, result = ${result})"
 
     type Next = (T, List[String])
 
